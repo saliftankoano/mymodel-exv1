@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "My model",
+  "version": "1.0.0",
+  "description": "Get paid for your data",
+  "icons": {
+    "16": "logo.png",
+    "48": "logo.png",
+    "128": "logo.png"
+  },
+  "action": {
+    "default_icon": "logo.png",
+    "default_popup": "index.html"
+  },
+  "permissions": ["storage", "tabs", "activeTab"],
+  "host_permissions": ["<all_urls>"]
+}
