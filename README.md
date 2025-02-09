@@ -2,6 +2,17 @@
 
 This is a Chrome extension that allows you to earn money by consenting to data sharing with brands.
 
+# Features To Do
+
+- [ ] Integrate login with Google with supabase (This will be useful to track email if user opts in)
+- [ ] Integrate email tracking with supabase
+- [ ] Integrate browser history tracking with supabase
+- [ ] Add a popup to the extension icon to see the earnings and settings
+- [ ] Add a page to see the earnings history
+- [ ] Add a page to see the settings
+- [ ] Add a page to see the privacy policy
+- [ ] Add a page to see the terms of service
+
 ## Development
 
 ```bash
