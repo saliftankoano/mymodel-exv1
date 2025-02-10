@@ -1,45 +1,158 @@
 import "./App.css";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Navigation, Mail, MapPin, Check, PiggyBank } from "lucide-react";
+import { Navigation, Mail, MapPin, Check } from "lucide-react";
 import { supabase } from "./lib/supabaseClient";
-
-interface DataOption {
-  id: string;
-  label: string;
-  icon: React.ReactNode;
-  description: string;
-  monthlyEarning: number;
-}
-
-interface UserPreferences {
-  userConsent: boolean;
-  consentDate: string;
-  dataPreferences: Record<string, boolean>;
-}
+import { AuthComponent } from "./components/Auth";
+import { EarningsDisplay } from "./components/EarningsDisplay";
+import { DataOptions } from "./components/DataOptions";
+import type { DataOption, UserPreferences } from "./types/types";
+import type { Session } from "@supabase/supabase-js";
 
 function App() {
+  const [session, setSession] = useState<Session | null>(null);
+  const [loading, setLoading] = useState(true);
   const [isConsented, setIsConsented] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
   const [consentDate, setConsentDate] = useState<string>("");
   const [selectedOptions, setSelectedOptions] = useState<
     Record<string, boolean>
   >({});
+  const [showSignInSuccess, setShowSignInSuccess] = useState(false);
 
-  // Load saved preferences from local storage on mount
-  useEffect(() => {
+  const initializeStateFromStorage = useCallback(() => {
     const savedPreferences = localStorage.getItem("userPreferences");
     if (savedPreferences) {
       try {
-        const preferences: UserPreferences = JSON.parse(savedPreferences);
+        const preferences = JSON.parse(savedPreferences) as UserPreferences;
         setIsConsented(preferences.userConsent);
         setSelectedOptions(preferences.dataPreferences);
         setConsentDate(preferences.consentDate);
-      } catch (error) {
-        console.error("Error parsing saved preferences:", error);
+      } catch (e) {
+        console.error("Error parsing localStorage preferences:", e);
+        setIsConsented(false);
+        setSelectedOptions({});
+        setConsentDate("");
       }
     }
   }, []);
+
+  const loadUserPreferences = useCallback(
+    async (userId: string) => {
+      try {
+        console.log("Loading preferences for user:", userId);
+        const { data, error } = await supabase
+          .from("user_preferences")
+          .select("*")
+          .eq("user_id", userId)
+          .single();
+
+        if (error) {
+          console.error("Error fetching preferences:", error);
+          if (error.code === "PGRST116") {
+            console.log("No preferences found for user, creating new record");
+            const newPreferences = {
+              userConsent: false,
+              consentDate: "",
+              dataPreferences: {},
+            };
+            setIsConsented(false);
+            setSelectedOptions({});
+            setConsentDate("");
+            localStorage.setItem(
+              "userPreferences",
+              JSON.stringify(newPreferences)
+            );
+          } else {
+            throw error;
+          }
+        }
+
+        if (data) {
+          console.log("Found preferences in Supabase:", data);
+          const preferences: UserPreferences = {
+            userConsent: true,
+            consentDate: data.consent_date,
+            dataPreferences: data.preferences || {},
+          };
+          localStorage.setItem("userPreferences", JSON.stringify(preferences));
+          setIsConsented(true);
+          setSelectedOptions(data.preferences || {});
+          setConsentDate(data.consent_date);
+        }
+      } catch (error) {
+        console.error("Error in loadUserPreferences:", error);
+        initializeStateFromStorage();
+      }
+    },
+    [initializeStateFromStorage]
+  );
+
+  useEffect(() => {
+    const accessToken = new URLSearchParams(
+      window.location.hash.substring(1)
+    ).get("access_token");
+    const authInProgress = localStorage.getItem("authInProgress");
+
+    initializeStateFromStorage();
+
+    if (accessToken && authInProgress) {
+      console.log("Detected return from auth redirect");
+      localStorage.removeItem("authInProgress");
+      chrome.runtime.sendMessage({
+        type: "AUTH_SUCCESS",
+        accessToken: accessToken,
+      });
+      window.close();
+    }
+
+    const handleMessage = (message: { type: string }) => {
+      if (message.type === "REFRESH_AUTH") {
+        window.location.reload();
+      }
+    };
+    chrome.runtime.onMessage.addListener(handleMessage);
+
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      console.log("Initial session:", session);
+      setSession(session);
+      if (session) {
+        loadUserPreferences(session.user.id);
+      }
+      setLoading(false);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(async (event, currentSession) => {
+      console.log("Auth state changed:", event, currentSession);
+      setSession(currentSession);
+      setLoading(false);
+
+      if (currentSession && event === "SIGNED_IN") {
+        await loadUserPreferences(currentSession.user.id);
+        setShowSignInSuccess(true);
+        setTimeout(() => window.close(), 1500);
+      } else if (event === "SIGNED_OUT") {
+        setIsConsented(false);
+        setSelectedOptions({});
+        setConsentDate("");
+        localStorage.removeItem("userPreferences");
+      }
+    });
+
+    console.log("Component mounted");
+
+    return () => {
+      subscription.unsubscribe();
+      chrome.runtime.onMessage.removeListener(handleMessage);
+    };
+  }, [loadUserPreferences, initializeStateFromStorage]);
+
+  useEffect(() => {
+    console.log("Loading state:", loading);
+    console.log("Session state:", session);
+  }, [loading, session]);
 
   const dataOptions: DataOption[] = [
     {
@@ -80,31 +193,56 @@ function App() {
 
   const saveToSupabase = async (preferences: UserPreferences) => {
     try {
-      // Get the user's browser ID or generate one if it doesn't exist
-      let browserId = localStorage.getItem("browserId");
-      if (!browserId) {
-        browserId = crypto.randomUUID();
-        localStorage.setItem("browserId", browserId);
-      }
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) throw new Error("No authenticated user");
 
-      const { error } = await supabase.from("user_preferences").upsert({
-        browser_id: browserId,
+      const preferencesData = {
+        user_id: user.id,
         consent_date: preferences.consentDate,
         preferences: preferences.dataPreferences,
         updated_at: new Date().toISOString(),
-      });
+      };
+
+      console.log("About to upsert with data:", preferencesData);
+      const { data, error } = await supabase
+        .from("user_preferences")
+        .upsert(preferencesData)
+        .select();
 
       if (error) throw error;
+      console.log("Upsert completed:", data);
+
+      return data;
     } catch (error) {
-      console.error("Error saving to Supabase:", error);
-      // Continue even if Supabase save fails - we have local storage backup
+      console.error("Error in saveToSupabase:", error);
+      throw error;
     }
+  };
+
+  const toggleOption = (optionId: string) => {
+    setSelectedOptions((prev) => {
+      const newOptions = {
+        ...prev,
+        [optionId]: !prev[optionId],
+      };
+
+      if (isConsented) {
+        setIsConsented(false);
+        setConsentDate("");
+      }
+
+      return newOptions;
+    });
   };
 
   const handleConsent = async () => {
     try {
-      if (!Object.values(selectedOptions).some(Boolean)) {
-        alert("Please select at least one option");
+      setShowSuccess(false);
+
+      if (Object.keys(selectedOptions).length === 0) {
+        alert("Please select at least one data option before saving.");
         return;
       }
 
@@ -115,54 +253,32 @@ function App() {
         dataPreferences: selectedOptions,
       };
 
-      // Save to local storage
-      localStorage.setItem("userPreferences", JSON.stringify(preferences));
+      console.log("Attempting to save preferences:", preferences);
 
-      // Save to chrome storage for extension persistence
-      await chrome.storage.local.set(preferences);
-
-      // Attempt to save to Supabase
+      // Save to Supabase first
       await saveToSupabase(preferences);
 
+      // If Supabase save is successful, update local storage and state
+      localStorage.setItem("userPreferences", JSON.stringify(preferences));
+      await chrome.storage.local.set(preferences);
+
+      // Update state AFTER successful save
       setIsConsented(true);
       setConsentDate(currentDate);
+      setSelectedOptions(preferences.dataPreferences);
       setShowSuccess(true);
-      setTimeout(() => setShowSuccess(false), 3000);
+
+      setTimeout(() => {
+        setShowSuccess(false);
+      }, 2000);
     } catch (error) {
       console.error("Failed to save preferences:", error);
       alert("Failed to save your preferences. Please try again.");
-    }
-  };
-
-  const toggleOption = (optionId: string) => {
-    if (isConsented) {
-      const confirmChange = window.confirm(
-        "Changing your preferences will reset your earning period. Your current earnings won't be processed. Do you want to continue?"
-      );
-      if (!confirmChange) return;
-    }
-
-    setSelectedOptions((prev) => {
-      const newOptions = {
-        ...prev,
-        [optionId]: !prev[optionId],
-      };
-
-      // If we're already consented, save changes immediately
-      if (isConsented) {
-        const currentDate = new Date().toISOString();
-        const preferences: UserPreferences = {
-          userConsent: true,
-          consentDate: currentDate,
-          dataPreferences: newOptions,
-        };
-        localStorage.setItem("userPreferences", JSON.stringify(preferences));
-        setConsentDate(currentDate);
-        saveToSupabase(preferences).catch(console.error);
+      // On error, reload the last known good state
+      if (session?.user) {
+        await loadUserPreferences(session.user.id);
       }
-
-      return newOptions;
-    });
+    }
   };
 
   const formatDate = (dateString: string) => {
@@ -185,7 +301,7 @@ function App() {
     if (!startDate) return "";
     try {
       const date = new Date(startDate);
-      date.setDate(date.getDate() + 30); // Add 30 days
+      date.setDate(date.getDate() + 30);
       return formatDate(date.toISOString());
     } catch (e: unknown) {
       if (e instanceof Error) {
@@ -195,93 +311,88 @@ function App() {
     }
   };
 
-  return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      className="container"
-    >
-      <div className="brand">
-        <h1 className="brand-name">my model</h1>
-      </div>
-
+  return loading ? (
+    <div>Loading...</div>
+  ) : session ? (
+    (console.log("Rendering main app - session exists"),
+    (
       <motion.div
-        className="earnings-display"
-        animate={{
-          scale: Object.values(selectedOptions).some(Boolean) ? 1 : 0.95,
-        }}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        className="container"
       >
-        <div className="earnings-header">
-          <PiggyBank className="earnings-icon" />
-          <div className="earnings-text">
-            <span className="earnings-amount">${calculateTotalEarnings()}</span>
-            <span className="earnings-period">/month</span>
-          </div>
+        <div className="brand">
+          <h1 className="brand-name">my model</h1>
+          <button
+            className="logout-button"
+            onClick={() => supabase.auth.signOut()}
+          >
+            Logout
+          </button>
         </div>
-        {isConsented && consentDate && (
-          <div className="earnings-info">
-            <div className="consent-date">
-              Started: {formatDate(consentDate)}
-            </div>
-            <div className="next-payout">
-              Next payout: {getNextPayoutDate(consentDate)}
-            </div>
-          </div>
-        )}
-      </motion.div>
 
-      <div className="options-list">
-        {dataOptions.map((option) => (
-          <motion.div
-            key={option.id}
-            className="option-item"
-            onClick={() => toggleOption(option.id)}
-            whileHover={{ x: 2 }}
-          >
-            <div className="option-content">
-              <span className="option-icon">{option.icon}</span>
-              <div className="option-text">
-                <span className="option-label">{option.label}</span>
-                <span className="option-description">{option.description}</span>
-              </div>
-              <div className="earning-tag">+${option.monthlyEarning}</div>
-            </div>
-            <div
-              className={`toggle ${selectedOptions[option.id] ? "active" : ""}`}
+        <EarningsDisplay
+          selectedOptions={selectedOptions}
+          calculateTotalEarnings={calculateTotalEarnings}
+          isConsented={isConsented}
+          consentDate={consentDate}
+          formatDate={formatDate}
+          getNextPayoutDate={getNextPayoutDate}
+        />
+
+        <DataOptions
+          dataOptions={dataOptions}
+          selectedOptions={selectedOptions}
+          toggleOption={toggleOption}
+        />
+
+        <motion.button
+          className={`consent-button ${isConsented ? "saved" : "unsaved"} ${
+            showSuccess ? "success" : ""
+          }`}
+          onClick={handleConsent}
+          whileHover={{ scale: 1.02 }}
+          whileTap={{ scale: 0.98 }}
+          disabled={Object.keys(selectedOptions).length === 0}
+        >
+          {isConsented ? "Preferences Saved" : "Save Preferences"}
+        </motion.button>
+
+        <AnimatePresence mode="wait">
+          {showSuccess && (
+            <motion.div
+              className="success-overlay"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              transition={{ duration: 0.2 }}
             >
-              <div className="toggle-slider" />
-            </div>
-          </motion.div>
-        ))}
-      </div>
-
-      <motion.button
-        className="consent-button"
-        onClick={handleConsent}
-        disabled={!Object.values(selectedOptions).some(Boolean)}
-        whileHover={{ scale: 1.02 }}
-        whileTap={{ scale: 0.98 }}
-      >
-        {isConsented ? "Preferences Saved" : "Start Earning"}
-      </motion.button>
-
-      <AnimatePresence>
-        {showSuccess && (
-          <motion.div
-            className="success-overlay"
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -20 }}
-          >
-            <div className="success-content">
-              <Check className="success-icon" />
-              <p>Data collection started!</p>
-              <span>You'll start earning soon</span>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </motion.div>
+              <div className="success-content">
+                <Check className="success-icon" />
+                <p>Data collection started!</p>
+                <span>You'll start earning soon</span>
+              </div>
+            </motion.div>
+          )}
+          {showSignInSuccess && (
+            <motion.div
+              className="success-overlay"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              transition={{ duration: 0.2 }}
+            >
+              <div className="success-content">
+                <Check className="success-icon" />
+                <p>Successfully signed in!</p>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </motion.div>
+    ))
+  ) : (
+    (console.log("Rendering Auth component - no session"), (<AuthComponent />))
   );
 }
 

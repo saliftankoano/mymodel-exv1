@@ -13,6 +13,12 @@ This is a Chrome extension that allows you to earn money by consenting to data s
 - [ ] Add a page to see the privacy policy
 - [ ] Add a page to see the terms of service
 
+# Hurdles & Solutions
+
+### 1- Supabase Google Auth without redirect url since it's a chrome extension
+
+Fixed by adding the supabase auth redirect url to the redirect url in the cloud console and using a popup window to open the auth url
+
 ## Development
 
 ```bash
@@ -28,3 +34,6 @@ Add the extension to Chrome on developer mode to test it:
 - Check "Developer mode"
 - Click on "Load unpacked"
 - Select the dist folder
+
+Extension ID: bhidddkliaoapnglkcjjficomonodldf
+Extension ID: bhidddkliaoapnglkcjjficomonodldf

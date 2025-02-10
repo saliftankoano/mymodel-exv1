@@ -4,7 +4,6 @@
   "version": "1.0.0",
   "description": "Get paid for your data",
   "icons": {
-    "16": "logo.png",
     "48": "logo.png",
     "128": "logo.png"
   },
@@ -12,6 +11,15 @@
     "default_icon": "logo.png",
     "default_popup": "index.html"
   },
-  "permissions": ["storage", "tabs", "activeTab"],
-  "host_permissions": ["<all_urls>"]
+  "permissions": ["storage", "tabs", "activeTab", "identity"],
+  "host_permissions": ["*://*/*", "https://*.supabase.co/*"],
+  "web_accessible_resources": [
+    {
+      "resources": ["index.html"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  }
 }
